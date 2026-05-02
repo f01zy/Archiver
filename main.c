@@ -6,10 +6,10 @@
 #define MAX_HEAP_SIZE     1024
 #define MAX_DATA_SIZE     65536
 #define MAX_FILENAME_SIZE 128
-#define SYMBOLS           128
+#define SYMBOLS           256
 
 struct Node {
-  char symbol;
+  unsigned char symbol;
   int frequency;
   struct Node *right;
   struct Node *left;
@@ -85,6 +85,7 @@ struct Node *top_heap(struct Heap *heap) {
 }
 
 void configure_codes(struct Node *node, struct Code codes[SYMBOLS], int curr, int size) {
+  if (!node) return;
   if (!node->left && !node->right) {
     codes[node->symbol] = (struct Code){curr, size};
     return;
@@ -93,14 +94,14 @@ void configure_codes(struct Node *node, struct Code codes[SYMBOLS], int curr, in
   if (node->left) configure_codes(node->left, codes, curr << 1, size + 1);
 }
 
-void write_code_to_result(char result[MAX_DATA_SIZE], struct Code code, int *i, int *j) {
+void write_code_to_result(unsigned char output[MAX_DATA_SIZE], struct Code code, int *i, int *j) {
   int k = 0;
   while (k < code.size) {
     if (*i > 7) {
       *i = 0;
       (*j)++;
     }
-    result[*j] |= ((code.code >> (code.size - k++ - 1)) & 1) << (*i)++;
+    output[*j] |= ((code.code >> (code.size - k++ - 1)) & 1) << (*i)++;
   }
 }
 
@@ -120,16 +121,7 @@ struct Node *configure_huffman_tree(struct Heap *heap) {
   return top_heap(heap);
 }
 
-void archive(char *path) {
-  FILE *file = fopen(path, "r");
-  char data[MAX_DATA_SIZE];
-  fgets(data, MAX_DATA_SIZE, file);
-
-  struct Heap heap         = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
-  int frequencies[SYMBOLS] = {0};
-  for (int i = 0; i < strlen(data); i++) {
-    frequencies[data[i]]++;
-  }
+void configure_heap(struct Heap *heap, int frequencies[SYMBOLS]) {
   for (int i = 0; i < SYMBOLS; i++) {
     if (frequencies[i]) {
       struct Node *node = (struct Node *)malloc(sizeof(struct Node));
@@ -137,37 +129,85 @@ void archive(char *path) {
       node->frequency   = frequencies[i];
       node->right       = NULL;
       node->left        = NULL;
-      push_heap(&heap, node);
+      push_heap(heap, node);
     }
   }
+}
 
+void archive(char *path) {
+  FILE *file = fopen(path, "r");
+  unsigned char data[MAX_DATA_SIZE];
+  int count = fread(data, sizeof(char), MAX_DATA_SIZE, file);
+  fclose(file);
+
+  struct Heap heap         = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
+  int frequencies[SYMBOLS] = {0};
+  for (int i = 0; i < count; i++) {
+    frequencies[data[i]]++;
+  }
+  configure_heap(&heap, frequencies);
   struct Node *head          = configure_huffman_tree(&heap);
   struct Code codes[SYMBOLS] = {0};
   configure_codes(head, codes, 0, 0);
 
-  char output[MAX_DATA_SIZE] = {0};
+  unsigned char output[MAX_DATA_SIZE] = {0};
   int i = 0, j = 0;
-  for (int k = 0; k < strlen(data); k++) {
+  for (int k = 0; k < count; k++) {
     struct Code code = codes[data[k]];
     write_code_to_result(output, code, &i, &j);
   }
 
-  printf("Compressed data (HEX): ");
-  for (int k = 0; k <= j; k++) {
-    printf("%02X ", (unsigned char)output[k]);
-  }
-  printf("\n");
-
   char filename[MAX_FILENAME_SIZE];
   snprintf(filename, MAX_FILENAME_SIZE, "%s.bin", path);
   FILE *archived = fopen(filename, "wb");
-  fwrite(frequencies, sizeof(frequencies[0]), SYMBOLS, archived);
-  fwrite(output, sizeof(output[0]), j + 1, archived);
+  fwrite(frequencies, sizeof(int), SYMBOLS, archived);
+  fwrite(output, sizeof(char), j + 1, archived);
   fclose(archived);
   free_heap(&heap);
 }
 
-void unarchive(char *path) {}
+void put_unarchive_result(struct Node *node, unsigned char data[MAX_DATA_SIZE], int *i, int *j, unsigned char output[MAX_DATA_SIZE], int *size) {
+  if (!node) return;
+  if (!node->left && !node->right) {
+    if (*size < MAX_DATA_SIZE - 1) output[(*size)++] = node->symbol;
+    return;
+  }
+  int side = (data[*j] >> (*i)++) & 1;
+  if (*i > 7) {
+    *i = 0;
+    (*j)++;
+  }
+  if (side) {
+    put_unarchive_result(node->right, data, i, j, output, size);
+  } else {
+    put_unarchive_result(node->left, data, i, j, output, size);
+  }
+}
+
+void unarchive(char *path) {
+  FILE *file = fopen(path, "r");
+  int frequencies[SYMBOLS];
+  fread(frequencies, sizeof(int), SYMBOLS, file);
+  unsigned char data[MAX_DATA_SIZE];
+  fseek(file, sizeof(int) * SYMBOLS, SEEK_SET);
+  int count = fread(data, sizeof(char), MAX_DATA_SIZE, file);
+  fclose(file);
+
+  struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
+  configure_heap(&heap, frequencies);
+  struct Node *head                   = configure_huffman_tree(&heap);
+  unsigned char output[MAX_DATA_SIZE] = {0};
+  int i = 0, j = 0, size = 0;
+  while (j < count - 1) {
+    put_unarchive_result(head, data, &i, &j, output, &size);
+  }
+
+  char *last = strrchr(path, '.');
+  if (last) *last = '\0';
+  FILE *unarchived = fopen(path, "w");
+  fwrite(output, sizeof(char), size, unarchived);
+  fclose(unarchived);
+}
 
 int main(int argc, char **argv) {
   if (argc != 3) {
