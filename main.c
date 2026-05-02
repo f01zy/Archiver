@@ -31,18 +31,30 @@ void swap(struct Node **a, struct Node **b) {
   *b                = temp;
 }
 
-void sort_heap(struct Heap *heap) {
-  for (int i = 0; i < heap->size; i++) {
-    int node = i;
-    while (node > 0) {
-      int parent = node % 2 == 0 ? (node - 2) / 2 : (node - 1) / 2;
-      if (heap->buf[parent]->frequency > heap->buf[node]->frequency) {
-        swap(&heap->buf[parent], &heap->buf[node]);
-        node = parent;
-      } else {
-        break;
-      }
+void shift_up(struct Heap *heap) {
+  int i = heap->size - 1;
+  while (i > 0) {
+    int parent = i % 2 == 0 ? (i - 2) / 2 : (i - 1) / 2;
+    if (heap->buf[parent]->frequency > heap->buf[i]->frequency) {
+      swap(&heap->buf[parent], &heap->buf[i]);
+      i = parent;
+    } else {
+      break;
     }
+  }
+}
+
+void shift_down(struct Heap *heap) {
+  int i = 0;
+  while (i < heap->size - 1) {
+    int left     = i * 2 + 1;
+    int right    = i * 2 + 2;
+    int smallest = i;
+    if (left < heap->size && heap->buf[left]->frequency < heap->buf[smallest]->frequency) smallest = left;
+    if (right < heap->size && heap->buf[right]->frequency < heap->buf[smallest]->frequency) smallest = right;
+    if (smallest == i) break;
+    swap(&heap->buf[i], &heap->buf[smallest]);
+    i = smallest;
   }
 }
 
@@ -50,13 +62,14 @@ void push_heap(struct Heap *heap, struct Node *node) {
   if (heap->size == MAX_HEAP_SIZE) return;
   heap->buf[heap->size] = node;
   heap->size++;
-  sort_heap(heap);
+  shift_up(heap);
 }
 
 void pop_heap(struct Heap *heap) {
   if (!heap->size) return;
   swap(&heap->buf[0], &heap->buf[heap->size - 1]);
   heap->size--;
+  shift_down(heap);
 }
 
 void free_heap(struct Heap *heap) {
@@ -139,11 +152,17 @@ void archive(char *path) {
     write_code_to_result(output, code, &i, &j);
   }
 
+  printf("Compressed data (HEX): ");
+  for (int k = 0; k <= j; k++) {
+    printf("%02X ", (unsigned char)output[k]);
+  }
+  printf("\n");
+
   char filename[MAX_FILENAME_SIZE];
   snprintf(filename, MAX_FILENAME_SIZE, "%s.bin", path);
   FILE *archived = fopen(filename, "wb");
   fwrite(frequencies, sizeof(frequencies[0]), SYMBOLS, archived);
-  fwrite(output, sizeof(output[0]), strlen(output), archived);
+  fwrite(output, sizeof(output[0]), j + 1, archived);
   fclose(archived);
   free_heap(&heap);
 }
@@ -160,7 +179,7 @@ int main(int argc, char **argv) {
   } else if (!strcmp(argv[1], "unarchive")) {
     unarchive(argv[2]);
   } else {
-    printf("There're two commands: archive and unarchive\n");
+    printf("There are two commands: archive and unarchive\n");
     return 1;
   }
 }
