@@ -6,7 +6,7 @@
 
 #define MAX_HEAP_SIZE      1024
 #define MAX_METADATA_SIZE  1024
-#define MAX_DATA_SIZE      65536
+#define MAX_DATA_SIZE      1048576
 #define MAX_PATH_SIZE      256
 #define MAX_EXTENSION_SIZE 16
 #define SYMBOLS            256
@@ -27,6 +27,19 @@ struct Code {
   int code;
   int size;
 };
+
+struct SymbolPair {
+  unsigned char symbol;
+  int frequency;
+};
+
+#pragma pack(push, 1)
+struct Metadata {
+  int path_size;
+  int frequencies_size;
+  int data_size;
+};
+#pragma pack(pop)
 
 void swap(struct Node **a, struct Node **b) {
   struct Node *temp = *a;
@@ -166,9 +179,9 @@ void get_file_extension(char *path, char *extension) {
 }
 
 void archive_file(char *path, char *where) {
-  FILE *file = fopen(path, "r");
-  unsigned char data[MAX_DATA_SIZE];
-  int count = fread(data, sizeof(data[0]), sizeof(data), file);
+  FILE *file                        = fopen(path, "r");
+  unsigned char data[MAX_DATA_SIZE] = {0};
+  int count                         = fread(data, sizeof(data[0]), sizeof(data), file);
   fclose(file);
 
   struct Heap heap         = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
@@ -188,12 +201,22 @@ void archive_file(char *path, char *where) {
     write_code_to_result(output, code, &i, &j);
   }
 
-  FILE *archived = fopen(where, "wb");
-  // TODO: Fill metadata
-  char metadata[MAX_METADATA_SIZE];
-  fwrite(metadata, sizeof(metadata[0]), sizeof(metadata), archived);
-  fwrite(frequencies, sizeof(frequencies[0]), sizeof(frequencies), archived);
-  fwrite(output, sizeof(output[0]), j + 1, archived);
+  struct SymbolPair pairs[SYMBOLS] = {0};
+  int pairs_count                  = 0;
+  for (int i = 0; i < SYMBOLS; i++) {
+    if (frequencies[i]) pairs[pairs_count++] = (struct SymbolPair){i, frequencies[i]};
+  }
+
+  FILE *archived           = fopen(where, "wb");
+  struct Metadata metadata = {
+      strlen(path),
+      pairs_count,
+      j + 1,
+  };
+  fwrite(&metadata, sizeof(struct Metadata), 1, archived);
+  fwrite(path, sizeof(path[0]), metadata.path_size, archived);
+  fwrite(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, archived);
+  fwrite(output, sizeof(output[0]), metadata.data_size, archived);
   fclose(archived);
   free_heap(&heap);
 }
@@ -201,18 +224,34 @@ void archive_file(char *path, char *where) {
 void archive_dir(char *path) {}
 
 void unarchive(char *path) {
-  FILE *file = fopen(path, "r");
-  char metadata[MAX_METADATA_SIZE];
-  fread(metadata, sizeof(metadata[0]), sizeof(metadata), file);
-  // TODO: process metadata
+  FILE *file               = fopen(path, "r");
+  int offset               = 0;
+  struct Metadata metadata = {0};
+  fread(&metadata, sizeof(struct Metadata), 1, file);
+  offset += sizeof(struct Metadata);
+  if (!metadata.path_size || !metadata.frequencies_size || !metadata.data_size) {
+    printf("Failed to read file metadata\n");
+    exit(1);
+  }
 
-  int frequencies[SYMBOLS];
-  fseek(file, sizeof(metadata[0]) * (int)sizeof(metadata), SEEK_SET);
-  fread(frequencies, sizeof(frequencies[0]), sizeof(frequencies), file);
+  char file_path[MAX_PATH_SIZE] = {0};
+  fseek(file, offset, SEEK_SET);
+  fread(file_path, sizeof(file_path[0]), metadata.path_size, file);
+  offset += (int)sizeof(file_path[0]) * metadata.path_size;
 
-  unsigned char data[MAX_DATA_SIZE];
-  fseek(file, sizeof(frequencies[0]) * (int)sizeof(frequencies), SEEK_SET);
-  int count = fread(data, sizeof(data[0]), sizeof(data), file);
+  struct SymbolPair pairs[SYMBOLS] = {0};
+  fseek(file, offset, SEEK_SET);
+  fread(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, file);
+  offset                   += (int)sizeof(struct SymbolPair) * metadata.frequencies_size;
+  int frequencies[SYMBOLS]  = {0};
+  for (int i = 0; i < metadata.frequencies_size; i++) {
+    frequencies[pairs[i].symbol] = pairs[i].frequency;
+  }
+
+  unsigned char data[MAX_DATA_SIZE] = {0};
+  fseek(file, offset, SEEK_SET);
+  int count = fread(data, sizeof(data[0]), metadata.data_size, file);
+  if (count != metadata.data_size) printf("Warning: read symbols count is not equal to data_size in metadata\n");
   fclose(file);
 
   struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
@@ -224,10 +263,8 @@ void unarchive(char *path) {
     put_unarchive_result(head, data, &i, &j, output, &size);
   }
 
-  char *last = strrchr(path, '.');
-  if (last) *last = '\0';
-  FILE *unarchived = fopen(path, "w");
-  fwrite(output, sizeof(output), size, unarchived);
+  FILE *unarchived = fopen(file_path, "w");
+  fwrite(output, sizeof(output[0]), size, unarchived);
   fclose(unarchived);
 }
 
