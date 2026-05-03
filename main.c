@@ -2,11 +2,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
-#define MAX_HEAP_SIZE     1024
-#define MAX_DATA_SIZE     65536
-#define MAX_FILENAME_SIZE 128
-#define SYMBOLS           256
+#define MAX_HEAP_SIZE      1024
+#define MAX_METADATA_SIZE  1024
+#define MAX_DATA_SIZE      65536
+#define MAX_PATH_SIZE      256
+#define MAX_EXTENSION_SIZE 16
+#define SYMBOLS            256
 
 struct Node {
   unsigned char symbol;
@@ -134,10 +137,38 @@ void configure_heap(struct Heap *heap, int frequencies[SYMBOLS]) {
   }
 }
 
-void archive(char *path) {
+void put_unarchive_result(struct Node *node, unsigned char data[MAX_DATA_SIZE], int *i, int *j, unsigned char output[MAX_DATA_SIZE], int *size) {
+  if (!node) return;
+  if (!node->left && !node->right) {
+    if (*size < MAX_DATA_SIZE - 1) output[(*size)++] = node->symbol;
+    return;
+  }
+  int side = (data[*j] >> (*i)++) & 1;
+  if (*i > 7) {
+    *i = 0;
+    (*j)++;
+  }
+  if (side) {
+    put_unarchive_result(node->right, data, i, j, output, size);
+  } else {
+    put_unarchive_result(node->left, data, i, j, output, size);
+  }
+}
+
+void get_file_extension(char *path, char *extension) {
+  char *extension_start = strrchr(path, '.');
+  char *dir_start       = strrchr(path, '/');
+  if (!extension_start || (dir_start && dir_start > extension_start)) {
+    extension[0] = '\0';
+    return;
+  }
+  strncpy(extension, extension_start, strlen(extension_start));
+}
+
+void archive_file(char *path, char *where) {
   FILE *file = fopen(path, "r");
   unsigned char data[MAX_DATA_SIZE];
-  int count = fread(data, sizeof(char), MAX_DATA_SIZE, file);
+  int count = fread(data, sizeof(data[0]), sizeof(data), file);
   fclose(file);
 
   struct Heap heap         = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
@@ -157,40 +188,31 @@ void archive(char *path) {
     write_code_to_result(output, code, &i, &j);
   }
 
-  char filename[MAX_FILENAME_SIZE];
-  snprintf(filename, MAX_FILENAME_SIZE, "%s.bin", path);
-  FILE *archived = fopen(filename, "wb");
-  fwrite(frequencies, sizeof(int), SYMBOLS, archived);
-  fwrite(output, sizeof(char), j + 1, archived);
+  FILE *archived = fopen(where, "wb");
+  // TODO: Fill metadata
+  char metadata[MAX_METADATA_SIZE];
+  fwrite(metadata, sizeof(metadata[0]), sizeof(metadata), archived);
+  fwrite(frequencies, sizeof(frequencies[0]), sizeof(frequencies), archived);
+  fwrite(output, sizeof(output[0]), j + 1, archived);
   fclose(archived);
   free_heap(&heap);
 }
 
-void put_unarchive_result(struct Node *node, unsigned char data[MAX_DATA_SIZE], int *i, int *j, unsigned char output[MAX_DATA_SIZE], int *size) {
-  if (!node) return;
-  if (!node->left && !node->right) {
-    if (*size < MAX_DATA_SIZE - 1) output[(*size)++] = node->symbol;
-    return;
-  }
-  int side = (data[*j] >> (*i)++) & 1;
-  if (*i > 7) {
-    *i = 0;
-    (*j)++;
-  }
-  if (side) {
-    put_unarchive_result(node->right, data, i, j, output, size);
-  } else {
-    put_unarchive_result(node->left, data, i, j, output, size);
-  }
-}
+void archive_dir(char *path) {}
 
 void unarchive(char *path) {
   FILE *file = fopen(path, "r");
+  char metadata[MAX_METADATA_SIZE];
+  fread(metadata, sizeof(metadata[0]), sizeof(metadata), file);
+  // TODO: process metadata
+
   int frequencies[SYMBOLS];
-  fread(frequencies, sizeof(int), SYMBOLS, file);
+  fseek(file, sizeof(metadata[0]) * (int)sizeof(metadata), SEEK_SET);
+  fread(frequencies, sizeof(frequencies[0]), sizeof(frequencies), file);
+
   unsigned char data[MAX_DATA_SIZE];
-  fseek(file, sizeof(int) * SYMBOLS, SEEK_SET);
-  int count = fread(data, sizeof(char), MAX_DATA_SIZE, file);
+  fseek(file, sizeof(frequencies[0]) * (int)sizeof(frequencies), SEEK_SET);
+  int count = fread(data, sizeof(data[0]), sizeof(data), file);
   fclose(file);
 
   struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
@@ -205,7 +227,7 @@ void unarchive(char *path) {
   char *last = strrchr(path, '.');
   if (last) *last = '\0';
   FILE *unarchived = fopen(path, "w");
-  fwrite(output, sizeof(char), size, unarchived);
+  fwrite(output, sizeof(output), size, unarchived);
   fclose(unarchived);
 }
 
@@ -214,10 +236,28 @@ int main(int argc, char **argv) {
     printf("Invalid input data\n");
     return 1;
   }
-  if (!strcmp(argv[1], "archive")) {
-    archive(argv[2]);
-  } else if (!strcmp(argv[1], "unarchive")) {
-    unarchive(argv[2]);
+
+  char *path = argv[2];
+  char *mode = argv[1];
+  struct stat path_stat;
+  stat(path, &path_stat);
+
+  if (strcmp(mode, "archive") == 0) {
+    if (S_ISREG(path_stat.st_mode)) {
+      char where[MAX_PATH_SIZE];
+      snprintf(where, sizeof(where), "%s.bin", path);
+      archive_file(path, where);
+    } else {
+      // TODO: Archive directory
+    }
+  } else if (strcmp(mode, "unarchive") == 0) {
+    char extension[MAX_EXTENSION_SIZE];
+    get_file_extension(path, extension);
+    if (strlen(extension) == 0 || strcmp(extension, ".bin") != 0) {
+      printf("This is not an archive\n");
+      return 1;
+    }
+    unarchive(path);
   } else {
     printf("There are two commands: archive and unarchive\n");
     return 1;
