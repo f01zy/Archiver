@@ -1,8 +1,10 @@
-#include <stddef.h>
+#include <dirent.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_HEAP_SIZE      1024
 #define MAX_METADATA_SIZE  1024
@@ -110,14 +112,14 @@ void configure_codes(struct Node *node, struct Code codes[SYMBOLS], int curr, in
   if (node->left) configure_codes(node->left, codes, curr << 1, size + 1);
 }
 
-void write_code_to_result(unsigned char output[MAX_DATA_SIZE], struct Code code, int *i, int *j) {
+void write_code_to_result(unsigned char result[MAX_DATA_SIZE], struct Code code, int *i, int *j) {
   int k = 0;
   while (k < code.size) {
     if (*i > 7) {
       *i = 0;
       (*j)++;
     }
-    output[*j] |= ((code.code >> (code.size - k++ - 1)) & 1) << (*i)++;
+    result[*j] |= ((code.code >> (code.size - k++ - 1)) & 1) << (*i)++;
   }
 }
 
@@ -178,7 +180,7 @@ void get_file_extension(char *path, char *extension) {
   strncpy(extension, extension_start, strlen(extension_start));
 }
 
-void archive_file(char *path, char *where) {
+void archive_file(char *path, FILE *output) {
   FILE *file                        = fopen(path, "r");
   unsigned char data[MAX_DATA_SIZE] = {0};
   int count                         = fread(data, sizeof(data[0]), sizeof(data), file);
@@ -194,11 +196,11 @@ void archive_file(char *path, char *where) {
   struct Code codes[SYMBOLS] = {0};
   configure_codes(head, codes, 0, 0);
 
-  unsigned char output[MAX_DATA_SIZE] = {0};
+  unsigned char result[MAX_DATA_SIZE] = {0};
   int i = 0, j = 0;
   for (int k = 0; k < count; k++) {
     struct Code code = codes[data[k]];
-    write_code_to_result(output, code, &i, &j);
+    write_code_to_result(result, code, &i, &j);
   }
 
   struct SymbolPair pairs[SYMBOLS] = {0};
@@ -207,65 +209,91 @@ void archive_file(char *path, char *where) {
     if (frequencies[i]) pairs[pairs_count++] = (struct SymbolPair){i, frequencies[i]};
   }
 
-  FILE *archived           = fopen(where, "wb");
   struct Metadata metadata = {
       strlen(path),
       pairs_count,
       j + 1,
   };
-  fwrite(&metadata, sizeof(struct Metadata), 1, archived);
-  fwrite(path, sizeof(path[0]), metadata.path_size, archived);
-  fwrite(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, archived);
-  fwrite(output, sizeof(output[0]), metadata.data_size, archived);
-  fclose(archived);
+  fwrite(&metadata, sizeof(struct Metadata), 1, output);
+  fwrite(path, sizeof(path[0]), metadata.path_size, output);
+  fwrite(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, output);
+  fwrite(result, sizeof(result[0]), metadata.data_size, output);
   free_heap(&heap);
 }
 
-void archive_dir(char *path) {}
-
-void unarchive(char *path) {
-  FILE *file               = fopen(path, "r");
-  int offset               = 0;
-  struct Metadata metadata = {0};
-  fread(&metadata, sizeof(struct Metadata), 1, file);
-  offset += sizeof(struct Metadata);
-  if (!metadata.path_size || !metadata.frequencies_size || !metadata.data_size) {
-    printf("Failed to read file metadata\n");
+void archive_dir(char *path, FILE *output) {
+  DIR *dir = opendir(path);
+  if (!dir) {
+    printf("Failed to read directory\n");
     exit(1);
   }
-
-  char file_path[MAX_PATH_SIZE] = {0};
-  fseek(file, offset, SEEK_SET);
-  fread(file_path, sizeof(file_path[0]), metadata.path_size, file);
-  offset += (int)sizeof(file_path[0]) * metadata.path_size;
-
-  struct SymbolPair pairs[SYMBOLS] = {0};
-  fseek(file, offset, SEEK_SET);
-  fread(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, file);
-  offset                   += (int)sizeof(struct SymbolPair) * metadata.frequencies_size;
-  int frequencies[SYMBOLS]  = {0};
-  for (int i = 0; i < metadata.frequencies_size; i++) {
-    frequencies[pairs[i].symbol] = pairs[i].frequency;
+  struct dirent *ent;
+  while ((ent = readdir(dir))) {
+    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+    char ent_path[MAX_PATH_SIZE];
+    snprintf(ent_path, sizeof(ent_path), "%s/%s", path, ent->d_name);
+    struct stat ent_stat;
+    stat(ent_path, &ent_stat);
+    if (S_ISREG(ent_stat.st_mode)) {
+      archive_file(ent_path, output);
+      printf("%s\n", ent_path);
+    } else if (S_ISDIR(ent_stat.st_mode)) {
+      archive_dir(ent_path, output);
+    }
   }
+  closedir(dir);
+}
 
-  unsigned char data[MAX_DATA_SIZE] = {0};
-  fseek(file, offset, SEEK_SET);
-  int count = fread(data, sizeof(data[0]), metadata.data_size, file);
-  if (count != metadata.data_size) printf("Warning: read symbols count is not equal to data_size in metadata\n");
-  fclose(file);
+void unarchive(char *path) {
+  int offset = 0;
+  while (1) {
+    FILE *file               = fopen(path, "r");
+    struct Metadata metadata = {0};
+    fread(&metadata, sizeof(struct Metadata), 1, file);
+    offset += sizeof(struct Metadata);
+    if (!metadata.path_size || !metadata.frequencies_size || !metadata.data_size) {
+      printf("Failed to read file metadata\n");
+      exit(1);
+    }
 
-  struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
-  configure_heap(&heap, frequencies);
-  struct Node *head                   = configure_huffman_tree(&heap);
-  unsigned char output[MAX_DATA_SIZE] = {0};
-  int i = 0, j = 0, size = 0;
-  while (j < count - 1) {
-    put_unarchive_result(head, data, &i, &j, output, &size);
+    char file_path[MAX_PATH_SIZE] = {0};
+    fseek(file, offset, SEEK_SET);
+    fread(file_path, sizeof(file_path[0]), metadata.path_size, file);
+    offset += (int)sizeof(file_path[0]) * metadata.path_size;
+
+    struct SymbolPair pairs[SYMBOLS] = {0};
+    fseek(file, offset, SEEK_SET);
+    fread(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, file);
+    offset                   += (int)sizeof(struct SymbolPair) * metadata.frequencies_size;
+    int frequencies[SYMBOLS]  = {0};
+    for (int i = 0; i < metadata.frequencies_size; i++) {
+      frequencies[pairs[i].symbol] = pairs[i].frequency;
+    }
+
+    unsigned char data[MAX_DATA_SIZE] = {0};
+    fseek(file, offset, SEEK_SET);
+    int data_readed_count = fread(data, sizeof(data[0]), metadata.data_size, file);
+    if (data_readed_count != metadata.data_size) break;
+    fclose(file);
+
+    struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
+    configure_heap(&heap, frequencies);
+    struct Node *head                   = configure_huffman_tree(&heap);
+    unsigned char result[MAX_DATA_SIZE] = {0};
+    int i = 0, j = 0, size = 0;
+    while (j < data_readed_count - 1) {
+      put_unarchive_result(head, data, &i, &j, result, &size);
+    }
+
+    // TODO: need to create a folder if it's absent
+    FILE *output = fopen(file_path, "w");
+    if (!output) {
+      printf("Failed to open output file\n");
+      continue;
+    }
+    fwrite(result, sizeof(result[0]), size, output);
+    fclose(output);
   }
-
-  FILE *unarchived = fopen(file_path, "w");
-  fwrite(output, sizeof(output[0]), size, unarchived);
-  fclose(unarchived);
 }
 
 int main(int argc, char **argv) {
@@ -279,18 +307,24 @@ int main(int argc, char **argv) {
   struct stat path_stat;
   stat(path, &path_stat);
 
-  if (strcmp(mode, "archive") == 0) {
-    if (S_ISREG(path_stat.st_mode)) {
-      char where[MAX_PATH_SIZE];
-      snprintf(where, sizeof(where), "%s.bin", path);
-      archive_file(path, where);
-    } else {
-      // TODO: Archive directory
+  if (!strcmp(mode, "archive")) {
+    char where[MAX_PATH_SIZE];
+    snprintf(where, sizeof(where), "%s.bin", path);
+    FILE *output = fopen(where, "wb");
+    if (!output) {
+      printf("Failed to open output file\n");
+      return 1;
     }
-  } else if (strcmp(mode, "unarchive") == 0) {
+    if (S_ISREG(path_stat.st_mode)) {
+      archive_file(path, output);
+    } else if (S_ISDIR(path_stat.st_mode)) {
+      archive_dir(path, output);
+    }
+    fclose(output);
+  } else if (!strcmp(mode, "unarchive")) {
     char extension[MAX_EXTENSION_SIZE];
     get_file_extension(path, extension);
-    if (strlen(extension) == 0 || strcmp(extension, ".bin") != 0) {
+    if (!strlen(extension) || strcmp(extension, ".bin")) {
       printf("This is not an archive\n");
       return 1;
     }
