@@ -6,14 +6,7 @@ gcc main.cpp -o main
 ```
 
 # Usage
-Archive some file:
-
 ```bash
-./main archive file.txt
-```
-
-Unarchive some file:
-
-```bash
-./main unarchive file.txt.bin
+./main archive folder
+./main unarchive folder.bin
 ```

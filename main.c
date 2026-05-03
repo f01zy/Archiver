@@ -245,36 +245,22 @@ void archive_dir(char *path, FILE *output) {
 }
 
 void unarchive(char *path) {
-  int offset = 0;
+  FILE *file = fopen(path, "r");
   while (1) {
-    FILE *file               = fopen(path, "r");
-    struct Metadata metadata = {0};
-    fread(&metadata, sizeof(struct Metadata), 1, file);
-    offset += sizeof(struct Metadata);
-    if (!metadata.path_size || !metadata.frequencies_size || !metadata.data_size) {
-      printf("Failed to read file metadata\n");
-      exit(1);
-    }
-
-    char file_path[MAX_PATH_SIZE] = {0};
-    fseek(file, offset, SEEK_SET);
-    fread(file_path, sizeof(file_path[0]), metadata.path_size, file);
-    offset += (int)sizeof(file_path[0]) * metadata.path_size;
-
+    struct Metadata metadata         = {0};
+    char file_path[MAX_PATH_SIZE]    = {0};
     struct SymbolPair pairs[SYMBOLS] = {0};
-    fseek(file, offset, SEEK_SET);
+    fread(&metadata, sizeof(struct Metadata), 1, file);
+    if (!metadata.path_size || !metadata.frequencies_size || !metadata.data_size) break;
+    fread(file_path, sizeof(file_path[0]), metadata.path_size, file);
     fread(pairs, sizeof(struct SymbolPair), metadata.frequencies_size, file);
-    offset                   += (int)sizeof(struct SymbolPair) * metadata.frequencies_size;
-    int frequencies[SYMBOLS]  = {0};
+    int frequencies[SYMBOLS] = {0};
     for (int i = 0; i < metadata.frequencies_size; i++) {
       frequencies[pairs[i].symbol] = pairs[i].frequency;
     }
 
     unsigned char data[MAX_DATA_SIZE] = {0};
-    fseek(file, offset, SEEK_SET);
-    int data_readed_count = fread(data, sizeof(data[0]), metadata.data_size, file);
-    if (data_readed_count != metadata.data_size) break;
-    fclose(file);
+    int data_readed_count             = fread(data, sizeof(data[0]), metadata.data_size, file);
 
     struct Heap heap = {(struct Node **)calloc(MAX_HEAP_SIZE, sizeof(struct Node *)), 0};
     configure_heap(&heap, frequencies);
@@ -285,7 +271,14 @@ void unarchive(char *path) {
       put_unarchive_result(head, data, &i, &j, result, &size);
     }
 
-    // TODO: need to create a folder if it's absent
+    for (int i = 0; i < metadata.path_size; i++) {
+      if (file_path[i] == '/') {
+        char temp    = file_path[i];
+        file_path[i] = '\0';
+        mkdir(file_path, 0777);
+        file_path[i] = temp;
+      }
+    }
     FILE *output = fopen(file_path, "w");
     if (!output) {
       printf("Failed to open output file\n");
@@ -294,6 +287,7 @@ void unarchive(char *path) {
     fwrite(result, sizeof(result[0]), size, output);
     fclose(output);
   }
+  fclose(file);
 }
 
 int main(int argc, char **argv) {
